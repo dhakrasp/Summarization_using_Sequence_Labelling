@@ -1,2 +1,5 @@
 
 *.pyc
+experiment_glove_6B_100d/*
+experiment_glove_6B_100d_layers_2/*
+lead_3_full_length/*
