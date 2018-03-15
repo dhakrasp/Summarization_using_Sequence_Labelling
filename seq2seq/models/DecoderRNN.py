@@ -64,6 +64,7 @@ class DecoderRNN(BaseRNN):
     KEY_ATTN_SCORE = 'attention_score'
     KEY_LENGTH = 'length'
     KEY_SEQUENCE = 'sequence'
+    KEY_SCORE = 'score'
 
     def __init__(self, vocab_size, max_len, hidden_size,
                  sos_id, eos_id,
@@ -118,6 +119,7 @@ class DecoderRNN(BaseRNN):
 
         decoder_outputs = []
         sequence_symbols = []
+        sequence_scores = []
         lengths = np.array([max_length] * batch_size)
 
         def decode(step, step_output, step_attn):
@@ -126,8 +128,10 @@ class DecoderRNN(BaseRNN):
             if self.use_attention:
                 ret_dict[DecoderRNN.KEY_ATTN_SCORE].append(step_attn)
             symbols = decoder_outputs[-1].topk(1)[1]
+            scores = decoder_outputs[-1].topk(1)[0]
             # print('symbols:', symbols)
             sequence_symbols.append(symbols)
+            sequence_scores.append(scores)
 
             eos_batches = symbols.data.eq(self.eos_id)
             if eos_batches.dim() > 0:
@@ -170,6 +174,7 @@ class DecoderRNN(BaseRNN):
                 decoder_input = symbols
 
         ret_dict[DecoderRNN.KEY_SEQUENCE] = sequence_symbols
+        ret_dict[DecoderRNN.KEY_SCORE] = sequence_scores
         ret_dict[DecoderRNN.KEY_LENGTH] = lengths.tolist()
 
         return torch.stack(decoder_outputs, dim=1), decoder_hidden, ret_dict

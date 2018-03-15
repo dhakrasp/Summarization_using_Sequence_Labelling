@@ -4,7 +4,9 @@ import pickle
 
 
 def make_write_safe(text):
-    return text.encode('latin-1', 'ignore').decode('utf-8', 'ignore')
+    text = text.replace('\u2013', '-')
+    # return text
+    return text.encode('utf-8', 'ignore').decode('latin-1', 'ignore')
 
 
 def write_to_file(text, filename, end='\n'):
@@ -22,12 +24,12 @@ if __name__ == '__main__':
         data = pickle.load(file)
 
     count = 0
-    for doc in data:
+    for doc in data[:500]:
         count += 1
         pred_filename = '{}/{:0>6}_hypothesis.txt'.format(lead_3_output_dir, count)
         pred_file = open(pred_filename, 'w')
         text = ''
-        for sent, label in doc[0][:3]:
+        for sent, label in doc[0][:4]:
             text += make_write_safe(sent.strip() + '\n')
         if byte_limit:
             text = text[:byte_limit]

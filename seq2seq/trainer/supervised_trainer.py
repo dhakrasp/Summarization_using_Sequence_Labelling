@@ -29,7 +29,7 @@ class SupervisedTrainer(object):
 
     def __init__(self, expt_dir='experiment', loss=NLLLoss(), batch_size=64,
                  random_seed=None,
-                 checkpoint_every=100, print_every=100):
+                 checkpoint_every=None, print_every=100):
         self._trainer = "Simple Trainer"
         self.random_seed = random_seed
         if random_seed is not None:
@@ -68,7 +68,7 @@ class SupervisedTrainer(object):
         return loss.get_loss()
 
     def _train_epoches(self, data, model, n_epochs, start_epoch, start_step,
-                       dev_data=None, save_best=True, teacher_forcing_ratio=0):
+                       dev_data=None, save_best=False, teacher_forcing_ratio=0):
         log = self.logger
 
         print_loss_total = 0  # Reset every print_every

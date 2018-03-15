@@ -7,6 +7,8 @@ from pprint import pprint
 import numpy as np
 import torch
 from nltk import sent_tokenize, word_tokenize
+from nltk.corpus import stopwords
+from string import punctuation
 from pyrouge import Rouge155
 from seq2seq.util.checkpoint import Checkpoint
 from sklearn.metrics import (accuracy_score, classification_report,
@@ -14,6 +16,13 @@ from sklearn.metrics import (accuracy_score, classification_report,
 from torch import nn
 from torch.autograd import Variable
 
+import random
+import math
+import logging
+from time import asctime
+import os
+
+stop_symbols = set(stopwords.words('english') + list(punctuation))
 use_cuda = torch.cuda.is_available()
 EncoderConfig = namedtuple('EncoderConfig', ['input_size',
                                              'hidden_size',
@@ -32,6 +41,7 @@ DecoderConfig = namedtuple('DecoderConfig', ['vocab_size',
                                              'use_attention',
                                              'dropout_p',
                                              'input_dropout_p'])
+LOG_FORMAT = '%(asctime)s %(levelname)s: %(message)s'
 
 
 def sort_tensor_by_lengths(unsorted_tensor, lengths):
@@ -77,7 +87,7 @@ def to_categorical(x, num_classes, max_len=None):
 
 def load_checkpoint(checkpoint_name, expt_dir):
     if checkpoint_name is not None:
-        logging.info("loading checkpoint from {}".format(os.path.join(
+        print("loading checkpoint from {}".format(os.path.join(
             expt_dir, Checkpoint.CHECKPOINT_DIR_NAME, checkpoint_name)))
         checkpoint_path = os.path.join(
             expt_dir, Checkpoint.CHECKPOINT_DIR_NAME, checkpoint_name)
@@ -86,12 +96,67 @@ def load_checkpoint(checkpoint_name, expt_dir):
     return Checkpoint.load(checkpoint_path)
 
 
-def sents_to_input(sents, vocab, glove_array, max_len):
+# def get_vector_and_weight(word, vocab, glove_array, tfidf_weights_dict):
+#     idx = vocab['<unk>']
+#     if word in vocab:
+#         idx = vocab[word]
+#     elif word.lower() in vocab:
+#         idx = vocab[word.lower()]
+#     if tfidf_weights_dict and word in tfidf_weights_dict:
+#         weight = tfidf_weights_dict[word]
+#     else:
+#         weight = 0.01
+#     return glove_array[idx], weight
+
+
+# def sents_to_input(sents, vocab, glove_array, max_len, include_length=False, tfidf_weights_dict=None):
+#     sent_vecs = []
+#     lengths = np.array([len(sent) for sent in sents], dtype='float32')
+#     rel_lengths = lengths / np.sum(lengths)
+#     for i, sentence in enumerate(sents):
+#         weights = []
+#         word_vecs = []
+#         for word in word_tokenize(sentence):
+#             if word in stop_symbols:
+#                 continue
+#             vec, wt = get_vector_and_weight(
+#                 word, vocab, glove_array, tfidf_weights_dict)
+#             word_vecs.append(vec * wt)
+#             weights.append(wt)
+#         sent_vec = np.mean(np.array(word_vecs, dtype='float32'),
+#                            axis=0) / float(sum(weights))
+#         if include_length:
+#             sent_vec = np.concatenate((sent_vec, rel_lengths[i:i + 1]))
+#         sent_vecs.append(torch.from_numpy(sent_vec))
+#     length = len(sent_vecs)
+#     for l in range(max_len - len(sent_vecs)):
+#         sent_vecs.append(torch.zeros_like(sent_vecs[0]))
+#     out = torch.stack(sent_vecs)
+#     return out, length
+def get_vector(word, vocab, glove_array):
+    idx = vocab['<unk>']
+    if word in vocab:
+        idx = vocab[word]
+    elif word.lower() in vocab:
+        idx = vocab[word.lower()]
+
+    return glove_array[idx]
+
+
+def sents_to_input(sents, vocab, glove_array, max_len, include_length=False, tfidf_weights_dict=None):
     sent_vecs = []
+    lengths = np.array([len(sent) for sent in sents], dtype='float32')
+    rel_lengths = lengths / np.sum(lengths)
     for i, sentence in enumerate(sents):
-        word_vecs = [get_vector(word, vocab, glove_array)
-                     for word in word_tokenize(sentence)]
+        word_vecs = []
+        for word in word_tokenize(sentence):
+            vec = get_vector(word, vocab, glove_array)
+            if word in stop_symbols:
+                vec = vec * 0
+            word_vecs.append(vec)
         sent_vec = np.mean(np.array(word_vecs, dtype='float32'), axis=0)
+        if include_length:
+            sent_vec = np.concatenate((sent_vec, rel_lengths[i:i + 1]))
         sent_vecs.append(torch.from_numpy(sent_vec))
     length = len(sent_vecs)
     for l in range(max_len - len(sent_vecs)):
@@ -108,16 +173,7 @@ def batch_generator(inputs, lengths, outputs, batch_size):
         yield inputs[start:end], lengths[start:end], outputs[start:end]
 
 
-def get_vector(word, vocab, glove_array):
-    idx = vocab['<unk>']
-    if word in vocab:
-        idx = vocab[word]
-    elif word.lower() in vocab:
-        idx = vocab[word.lower()]
-    return glove_array[idx]
-
-
-def create_train_batch_from_docs(docs, input_word2idx, output_word2idx, glove_array, max_len, sort=True):
+def create_train_batch_from_docs(docs, input_word2idx, output_word2idx, glove_array, max_len, include_length=False, tfidf_weights_dict=None, sort=True):
     inputs = []
     lengths = []
     targets = []
@@ -126,13 +182,13 @@ def create_train_batch_from_docs(docs, input_word2idx, output_word2idx, glove_ar
         sent_labels = ['<sos>']
         for sent, label in doc[0][:max_len]:
             sents.append(sent)
-            # Convert to string. Also, convert 2 to '1'
-            sent_labels.append('1' if label == 2 else str(label))
+            # Convert to string. Also, convert 2 to '0'
+            sent_labels.append('0' if label == 2 else str(label))
         sent_labels.append('<eos>')
         for l in range(max_len - len(sent_labels) + 2):
             sent_labels.append('NA')
         doc_input, doc_length = sents_to_input(
-            sents, input_word2idx, glove_array, max_len)
+            sents, input_word2idx, glove_array, max_len, include_length, tfidf_weights_dict)
         sent_label_indices = [output_word2idx[label] for label in sent_labels]
         lengths.append(doc_length)
         inputs.append(doc_input)
@@ -149,7 +205,7 @@ def create_train_batch_from_docs(docs, input_word2idx, output_word2idx, glove_ar
     return Variable(inputs), lengths, Variable(targets), indices
 
 
-def create_predict_batch_from_docs(docs, input_word2idx, output_word2idx, glove_array, max_len, sort=True):
+def create_predict_batch_from_docs(docs, input_word2idx, output_word2idx, glove_array, max_len, include_length=False, tfidf_weights_dict=None, sort=True):
     inputs = []
     lengths = []
     targets = []
@@ -165,7 +221,7 @@ def create_predict_batch_from_docs(docs, input_word2idx, output_word2idx, glove_
         for l in range(max_len - len(sent_labels) + 2):
             sent_labels.append('NA')
         doc_input, doc_length = sents_to_input(
-            sents, input_word2idx, glove_array, max_len)
+            sents, input_word2idx, glove_array, max_len, include_length, tfidf_weights_dict)
         sent_label_indices = [output_word2idx[label] for label in sent_labels]
         lengths.append(doc_length)
         inputs.append(doc_input)
@@ -183,37 +239,32 @@ def create_predict_batch_from_docs(docs, input_word2idx, output_word2idx, glove_
     return Variable(inputs), lengths, Variable(targets), indices, docs_to_return
 
 
-def data_generator(data_path, input_word2idx, output_word2idx, glove_array, max_len, batch_size=16, return_docs=False):
+def data_generator(data_path, input_word2idx, output_word2idx, glove_array, max_len, batch_size=16, include_length=False, tfidf_weights_dict=None, return_docs=False, max_docs=None):
     with open(data_path, mode='rb') as file:
         docs = pickle.load(file)
-
-    num_batchs = math.ceil(len(docs) // batch_size)
+    if max_docs is not None:
+        docs = random.sample(docs, max_docs)
+        # docs = docs[:max_docs]
+    # else:
+        # random.shuffle(docs)
+    num_batchs = math.ceil(len(docs) / batch_size)
     for i in range(num_batchs):
         start = i * batch_size
         end = (i + 1) * batch_size
         if not return_docs:
             yield create_train_batch_from_docs(docs[start:end], input_word2idx,
-                                               output_word2idx, glove_array, max_len)
+                                               output_word2idx, glove_array, max_len, include_length, tfidf_weights_dict)
         else:
             yield create_predict_batch_from_docs(docs[start:end], input_word2idx,
-                                                 output_word2idx, glove_array, max_len)
+                                                 output_word2idx, glove_array, max_len, include_length, tfidf_weights_dict)
 
 
 def train_on_mini_batch(model, optimizer, loss_func, inputs, lengths, targets):
     model.zero_grad()
-    # print(lengths[:10])
-    # print(targets[0])
     model_outputs, _, ret_dict = model.forward(inputs, lengths, targets)
     loss = 0
     for idx in range(model_outputs.size()[0]):
         loss += loss_func(model_outputs[idx], targets[idx, 1:])
-    # print(model_outputs.size())
-    # print(targets[:, -1].size())
-    # print([x.data[0][0] for x in ret_dict['sequence']])
-    # predictions = torch.stack(ret_dict['sequence']).squeeze(-1).transpose(0,1)
-    # print(predictions.size())
-    # print(targets.data.tolist())
-    # loss = loss_func(model_outputs, targets[:, 1:])
     loss.backward()
     clip_grad_norm(optimizer, max_grad_norm=5)
     optimizer.step()
@@ -231,14 +282,18 @@ def train_epochs_generator(train_generator_dict, model, optimizer, loss_func, ep
                                          train_generator_dict['output_word2idx'],
                                          train_generator_dict['glove_array'],
                                          train_generator_dict['max_len'],
-                                         train_generator_dict['batch_size'])
+                                         train_generator_dict['batch_size'],
+                                         train_generator_dict['include_length'],
+                                         train_generator_dict['tfidf_weights_dict'])
         if valid_generator_dict is not None:
             valid_generator = data_generator(valid_generator_dict['path'],
                                              valid_generator_dict['input_word2idx'],
                                              valid_generator_dict['output_word2idx'],
                                              valid_generator_dict['glove_array'],
                                              valid_generator_dict['max_len'],
-                                             valid_generator_dict['batch_size'])
+                                             valid_generator_dict['batch_size'],
+                                             train_generator_dict['include_length'],
+                                             train_generator_dict['tfidf_weights_dict'])
         step = 0
         epoch_loss = 0
         model.train()
@@ -247,26 +302,27 @@ def train_epochs_generator(train_generator_dict, model, optimizer, loss_func, ep
             epoch_loss += train_on_mini_batch(model,
                                               optimizer, loss_func, inputs, lengths, targets)
             if step % print_every == 0:
-                print('Step : {} Avg Step Loss : {}'.format(
+                logging.info('Step : {} Avg Step Loss : {}'.format(
                     step, epoch_loss / step))
                 # break
             if save_every is not None and step % save_every == 0:
                 checkpoint = Checkpoint(model, optimizer, epoch, step,
                                         None, None)
                 checkpoint.save(experiment_dir)
-                print('Saved step chekpoint ...epoch:{} \tstep:{}'.format(epoch, step))
-        if best_epoch_loss > epoch_loss:
-            best_epoch_loss = epoch_loss
-            checkpoint = Checkpoint(model, optimizer, epoch, step, None, None)
-            checkpoint.save(experiment_dir)
-            print('Saved epoch chekpoint ...epoch:{} \tstep:{}'.format(epoch, step))
+                logging.info(
+                    'Saved step chekpoint ...epoch:{} \tstep:{}'.format(epoch, step))
+        checkpoint = Checkpoint(model, optimizer, epoch, step, None, None)
+        checkpoint.save(experiment_dir)
+        logging.info(
+            'Saved epoch chekpoint ...epoch:{} \tstep:{}'.format(epoch, step))
         val_acc = '--NA--'
         if valid_generator:
             val_acc = eval_generator(valid_generator, model)
-            print('\n-->--> Epoch: {} \tTraining Loss: {} \tValidation Accuracy: {}'.format(
+            logging.info('\n-->--> Epoch: {} \tTraining Loss: {} \tValidation Accuracy: {}'.format(
                 epoch, epoch_loss, val_acc))
         else:
-            print('\n-->--> Epoch: {} \tTraining Loss: {}'.format(epoch, epoch_loss))
+            logging.info(
+                '\n-->--> Epoch: {} \tTraining Loss: {}'.format(epoch, epoch_loss))
 
 
 def eval_generator(generator, model):
@@ -288,62 +344,70 @@ def eval_generator(generator, model):
                 y_pred += p
                 y_true += t
     if len(y_true) > 1:
-        print(classification_report(y_true, y_pred))
-        print(confusion_matrix(y_true, y_pred))
+        logging.info('\n\n' + classification_report(y_true, y_pred))
+        try:
+            logging.info(confusion_matrix(y_true, y_pred))
+        except TypeError:
+            logging.info('Could not print confusion matrix!')
         acc = accuracy_score(y_true, y_pred)
     else:
         acc = -1
     return acc
 
 
-def get_extractive_abstractive_gold_and_predicted_summary(predictions, docs, output_idx2word, byte_limit=None):
+def get_extractive_abstractive_gold_and_predicted_summary(predictions, scores, docs, output_idx2word, byte_limit=None):
     assert predictions.size()[0] == len(docs)
     data = []
     for idx, doc in enumerate(docs):
         abs_gold_summary = ' .\n'.join([sent for sent in doc[1]])
         ext_gold_summary = ' .\n'.join(
-            [sent for sent, label in doc[0] if label])
-        cut_off = min(len(doc), predictions.size()[1])
-        pred_summary = ''
+            [sent for sent, label in doc[0][:3]])
+        cut_off = min(len(doc[0]), predictions.size()[1])
+        pred_sents = []
+        pred_scores = []
+        selected_sents = []
         for j, tup in enumerate(doc[0][:cut_off]):
             sent = tup[0]
             pred_label = predictions[idx][j].data[0]
+            score = scores[idx][j].data[0]
             pred_label = output_idx2word[pred_label]
             if pred_label == '1':
-                pred_summary += sent + ' .\n'
+                pred_sents.append(sent)
+                pred_scores.append(score)
+
+        if len(pred_sents) == 0:
+            selected_sents = list(map(lambda x: x[0], doc[0][:cut_off]))[:3]
+            selected_sents = ['']
+        else:
+            lengths = torch.Tensor([len(sent) for sent in pred_sents])
+            lengths /= torch.sum(lengths) + 1
+            tensor_scores = torch.Tensor(pred_scores) / lengths
+            sorted_scores, indices = torch.sort(tensor_scores, descending=True)
+            # Select 6 shortest sentences but keep in original order
+            selected_sents = [pred_sents[i] for i in sorted(indices.tolist())]
+        # selected_sents = list(map(lambda x: ignore_stopwords(x, stop_symbols), selected_sents))
+        # Cutting off at 3 sentences at max
+        try:
+            pred_summary = '\n'.join(selected_sents[:3])
+        except TypeError:
+            pprint(selected_sents)
+            print('\n\n\n')
+            exit()
+
         if byte_limit is not None:
             pred_summary = pred_summary[:byte_limit]
+            abs_gold_summary = abs_gold_summary[:byte_limit].replace('*', '')
+            ext_gold_summary = ext_gold_summary[:byte_limit]
         data.append((abs_gold_summary, ext_gold_summary, pred_summary))
     return data
 
 
-def get_abstractive_gold_and_predicted_summary(predictions, docs, output_idx2word):
-    assert predictions.size()[0] == len(docs)
-    data = []
-    for idx, doc in enumerate(docs):
-        gold_summary = ' . '.join([sent for sent in doc[1]])
-        # print('')
-        # print('')
-        # print('')
-        # print(gold_summary.encode('latin-1', 'ignore').decode('utf-8', 'ignore'))
-        # print('')
-        # print('')
-        # print('')
-
-        # exit()
-        cut_off = min(len(doc), predictions.size()[1])
-        pred_summary = ''
-        for j, tup in enumerate(doc[0][:cut_off]):
-            sent = tup[0]
-            pred_label = predictions[idx][j].data[0]
-            pred_label = output_idx2word[pred_label]
-            if pred_label == '1':
-                pred_summary += sent + ' . '
-        data.append((gold_summary, pred_summary))
-    return data
+def ignore_stopwords(text, stopwords):
+    ret = [word for word in text.split() if word not in stopwords]
+    return ' '.join(ret)
 
 
-def predict_generator(generator, model, output_idx2word, word_limit=None):
+def predict_generator(generator, model, output_idx2word, byte_limit=None):
     """[summary]
 
     Arguments:
@@ -359,15 +423,13 @@ def predict_generator(generator, model, output_idx2word, word_limit=None):
     for inputs, lengths, targets, indices, docs in generator:
         count += 1
         model_outputs, _, ret_dict = model.forward(
-            inputs, lengths, targets)
+            inputs, lengths, None, teacher_forcing_ratio=0)
         predictions = torch.stack(
             ret_dict['sequence']).squeeze(-1).transpose(0, 1)
+        scores = torch.stack(
+            ret_dict['score']).squeeze(-1).transpose(0, 1)
         data = get_extractive_abstractive_gold_and_predicted_summary(
-            predictions, docs, output_idx2word, word_limit)
-        # if not abstractive:
-        # else:
-        #     data = get_abstractive_gold_and_predicted_summary(
-        #         predictions, docs, output_idx2word)
+            predictions, scores, docs, output_idx2word, byte_limit)
         yield data
 
 
@@ -382,7 +444,11 @@ def dump_in_ner_format(pickle_file='../../Downloads/Datasets/Summarization/neura
 
 
 def make_write_safe(text):
-    return text.encode('latin-1', 'ignore').decode('utf-8', 'ignore')
+    text = text.replace('\u2013', '-')
+    text = text.replace('\u2014', '')
+    text = text.replace('\u22f1', '')
+    # return text
+    return text.encode('utf-8', 'ignore').decode('latin-1', 'ignore')
 
 
 def write_to_file(text, filename, end='\n'):
