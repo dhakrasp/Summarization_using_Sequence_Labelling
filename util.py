@@ -21,6 +21,9 @@ import math
 import logging
 from time import asctime
 import os
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 stop_symbols = set(stopwords.words('english') + list(punctuation))
 use_cuda = torch.cuda.is_available()
@@ -243,10 +246,10 @@ def data_generator(data_path, input_word2idx, output_word2idx, glove_array, max_
     with open(data_path, mode='rb') as file:
         docs = pickle.load(file)
     if max_docs is not None:
-        docs = random.sample(docs, max_docs)
-        # docs = docs[:max_docs]
+        # docs = random.sample(docs, max_docs)
+        docs = docs[:max_docs]
     # else:
-        # random.shuffle(docs)
+    #     random.shuffle(docs)
     num_batchs = math.ceil(len(docs) / batch_size)
     for i in range(num_batchs):
         start = i * batch_size
@@ -261,7 +264,8 @@ def data_generator(data_path, input_word2idx, output_word2idx, glove_array, max_
 
 def train_on_mini_batch(model, optimizer, loss_func, inputs, lengths, targets):
     model.zero_grad()
-    model_outputs, _, ret_dict = model.forward(inputs, lengths, targets)
+    model_outputs, _, ret_dict = model.forward(
+        inputs, lengths, targets, teacher_forcing_ratio=0)
     loss = 0
     for idx in range(model_outputs.size()[0]):
         loss += loss_func(model_outputs[idx], targets[idx, 1:])
@@ -355,17 +359,19 @@ def eval_generator(generator, model):
     return acc
 
 
-def get_extractive_abstractive_gold_and_predicted_summary(predictions, scores, docs, output_idx2word, byte_limit=None):
+def get_extractive_abstractive_gold_and_predicted_summary(predictions, docs, output_idx2word, byte_limit=None):
     assert predictions.size()[0] == len(docs)
     data = []
+    position_weights = [0.94, 0.915, 0.88, 0.868, 0.827, 0.805, 0.794, 0.783, 0.78, 0.774, 0.763, 0.756, 0.74, 0.728, 0.724, 0.718, 0.712, 0.7, 0.698, 0.702, 0.694, 0.685, 0.683, 0.682, 0.676, 0.674, 0.673, 0.667, 0.653, 0.65, 0.645, 0.645, 0.643, 0.635, 0.623, 0.598, 0.599, 0.591, 0.598, 0.592, 0.585, 0.576, 0.561, 0.563, 0.563, 0.572, 0.573, 0.574, 0.562, 0.524]
     for idx, doc in enumerate(docs):
         abs_gold_summary = ' .\n'.join([sent for sent in doc[1]])
         ext_gold_summary = ' .\n'.join(
-            [sent for sent, label in doc[0][:3]])
+            [sent for sent, label in doc[0]])
         cut_off = min(len(doc[0]), predictions.size()[1])
         pred_sents = []
         pred_scores = []
         selected_sents = []
+        sent_nums = []
         for j, tup in enumerate(doc[0][:cut_off]):
             sent = tup[0]
             pred_label = predictions[idx][j].data[0]
@@ -374,19 +380,29 @@ def get_extractive_abstractive_gold_and_predicted_summary(predictions, scores, d
             if pred_label == '1':
                 pred_sents.append(sent)
                 pred_scores.append(score)
+                sent_nums.append(j + 1)
 
         if len(pred_sents) == 0:
-            selected_sents = list(map(lambda x: x[0], doc[0][:cut_off]))[:3]
-            selected_sents = ['']
+            # selected_sents = list(map(lambda x: x[0], doc[0][:cut_off]))[:3]
+            selected_sents = [''] * 3
+            sent_nums = [4] * 3
         else:
             lengths = torch.Tensor([len(sent) for sent in pred_sents])
             lengths /= torch.sum(lengths) + 1
-            tensor_scores = torch.Tensor(pred_scores) / lengths
+            # tensor_scores = torch.Tensor(pred_scores)
+            # tensor_scores /= lengths
+            # for s in sorted_scores.tolist():
+            #     print('{:.3}'.format(s), end=' ')
+            # print('\n')
+
+            tensor_scores = torch.exp(torch.Tensor(pred_scores))
+            scores_list = tensor_scores.tolist()
             sorted_scores, indices = torch.sort(tensor_scores, descending=True)
-            # Select 6 shortest sentences but keep in original order
-            selected_sents = [pred_sents[i] for i in sorted(indices.tolist())]
-        # selected_sents = list(map(lambda x: ignore_stopwords(x, stop_symbols), selected_sents))
-        # Cutting off at 3 sentences at max
+            # Cutting off at 3 sentences at max
+            selected_sents = [pred_sents[i] for i in indices.tolist()[:3]]
+
+
+
         try:
             pred_summary = '\n'.join(selected_sents[:3])
         except TypeError:
@@ -464,3 +480,30 @@ def evaluate_rouge(hypothesis_dir, gold_dir):
     r.model_filename_pattern = '#ID#_reference.txt'
     output = r.convert_and_evaluate()
     return output, r.output_to_dict(output)
+
+
+def save_count_graph(x, y, filename):
+    plt.clf()
+    plt.cla()
+    plt.close()
+    # plt.plot(x, y)
+    plt.bar(x, y)
+    max_num = max(x)
+    plt.xticks(np.arange(1, max_num + 1))
+    plt.xlabel('Sentence postion')
+    plt.ylabel('Count')
+    plt.title('Selection strategy: top 3 by score')
+    plt.savefig(filename)
+
+
+def save_score_graph(x, y, filename):
+    plt.clf()
+    plt.cla()
+    plt.close()
+    plt.plot(x, y)
+    max_num = max(x)
+    plt.xticks(np.arange(1, max_num + 1, 5))
+    plt.xlabel('Sentence postion')
+    plt.ylabel('Avg. confidence score')
+    # plt.title('Variation of confidence score according to sentence postion')
+    plt.savefig(filename)

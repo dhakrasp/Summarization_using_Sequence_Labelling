@@ -3,7 +3,7 @@ from __future__ import print_function
 import os
 import pickle
 import argparse
-from collections import OrderedDict
+from collections import OrderedDict, Counter
 
 import numpy as np
 import torch
@@ -76,7 +76,7 @@ if __name__ == '__main__':
 
     hidden_dim = input_dim
     max_len = 50
-    batch_size = 128
+    batch_size = 256
     output_word2idx = {'NA': 0, '<sos>': 1, '0': 2, '1': 3, '<eos>': 4}
     output_idx2word = {v: k for k, v in output_word2idx.items()}
     if opt.mode.strip() == 'train':
@@ -160,7 +160,7 @@ if __name__ == '__main__':
                                         opt.include_length,
                                         tfidf_weights_dict,
                                         return_docs=True,
-                                        max_docs=None)
+                                        max_docs=2000)
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
         if not os.path.exists(hypothesis_output_dir):
@@ -179,6 +179,7 @@ if __name__ == '__main__':
                     abs_reference_output_dir, count)
                 baseline_file = '{}/{:0>6}_hypothesis.txt'.format(
                     baseline_hypothesis_output_dir, count)
+                total_length += len(pred)
                 write_to_file(pred, pred_file)
                 write_to_file(abs_gold, abs_gold_file)
                 write_to_file(baseline, baseline_file)
